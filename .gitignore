@@ -1,0 +1,17 @@
+# Dataset (not redistributed, see README for how to obtain it)
+AmesHousing.csv
+
+# R / RStudio artifacts
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# knitr/rmarkdown intermediate files
+*_files/
+*_cache/
+
+# OS files
+.DS_Store
+Thumbs.db

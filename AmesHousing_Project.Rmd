@@ -1,0 +1,420 @@
+---
+title: "Ames Housing Price Prediction: OLS, Ridge, LASSO and Elastic Net Comparison"
+author: "Giulio Donato Gottardi"
+date: July 2026
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## 1. Data Import and Cleaning
+
+I import the Ames Housing dataset and check the type of the `SalePrice` column.
+
+```{r}
+ames = read.csv("AmesHousing.csv", na.strings = c("NA", ""))
+class(ames$SalePrice)
+head(ames$SalePrice)
+```
+
+`SalePrice` is already stored as a numeric variable, so no further cleaning
+is needed on the raw column itself.
+
+I create the variable `log_SalePrice` to satisfy the homoscedasticity condition.
+
+```{r}
+ames$log_SalePrice = log(ames$SalePrice)
+```
+
+I convert `Neighborhood`, `Bldg.Type`, `Kitchen.Qual` and `Central.Air` to factors.
+
+```{r}
+ames$Neighborhood = as.factor(ames$Neighborhood)
+class(ames$Neighborhood)
+
+ames$Bldg.Type = as.factor(ames$Bldg.Type)
+class(ames$Bldg.Type)
+
+ames$Kitchen.Qual = as.factor(ames$Kitchen.Qual)
+class(ames$Kitchen.Qual)
+
+ames$Central.Air = as.factor(ames$Central.Air)
+class(ames$Central.Air)
+```
+
+### 1.1 Missing Value Analysis
+
+I keep only the fourteen variables of interest and check for missing values.
+
+```{r}
+project_variables = c("log_SalePrice", "Overall.Qual", "Overall.Cond",
+    "Gr.Liv.Area", "Total.Bsmt.SF", "Garage.Cars", "Year.Built",
+    "Full.Bath", "TotRms.AbvGrd", "Lot.Area", "Neighborhood",
+    "Bldg.Type", "Kitchen.Qual", "Central.Air")
+
+model_data = ames[, project_variables]
+
+mean(is.na(model_data)) * 100
+colMeans(is.na(model_data)) * 100
+```
+
+The Ames dataset is essentially complete for the variables selected here:
+only `Total.Bsmt.SF` and `Garage.Cars` have a single missing value each.
+This is not a coincidence: several other
+Ames columns (e.g. `Pool.QC`, `Alley`, `Fence`, `Fireplace.Qu`) are
+missing for a large share of observations, but in those cases `NA` is
+**structural** — it means the house does not have that feature (no pool,
+no alley access, no fence) rather than a value that was not recorded. I
+deliberately excluded those variables from the model to avoid the need
+for a separate imputation/recoding step, and kept only variables where
+missingness is negligible and clearly due to data entry (e.g. a basement
+area not being recorded).
+
+```{r}
+dim(model_data)
+clean_data = na.omit(model_data)
+dim(clean_data)
+```
+
+The dataset had 2930 observations; after removing the two rows with
+missing values, 2928 observations are left.
+
+## 2. SalePrice vs log(SalePrice)
+
+```{r}
+par(mfrow = c(1, 2))
+
+hist(ames$SalePrice,
+     main = "Distribution of SalePrice",
+     xlab = "SalePrice ($)", col = "steelblue", breaks=50)
+
+hist(ames$log_SalePrice,
+     main = "Distribution of log(SalePrice)",
+     xlab = "log(SalePrice)", col = "darkorange", breaks=50)
+```
+
+The raw `SalePrice` is right-skewed because of a
+subset of high-value properties. The logarithmic transformation makes the
+distribution considerably more symmetric, which helps satisfy the
+homoscedasticity and approximate-normality assumptions of the linear
+regression that follows.
+
+## 3. Multiple Linear Regression
+
+I fit a linear model using `log_SalePrice` as the response and all the other
+variables as predictors.
+
+```{r}
+lm.fit = lm(log_SalePrice ~ ., data = clean_data)
+summary(lm.fit)
+```
+
+This specification explains roughly **88% of the variance** in
+`log_SalePrice` (R-squared and adjusted R-squared both close to 0.88).
+This is expected: `Overall.Qual`, `Gr.Liv.Area`, `Total.Bsmt.SF`,
+`Year.Built` and `Garage.Cars` are strong, economically meaningful
+determinants of house price, and together with `Neighborhood` they
+capture most of what actually drives price differences across
+properties.
+
+`Overall.Qual` and `Overall.Cond` are highly significant with positive
+coefficients, confirming that both the quality of materials/finish and
+the condition of the house are priced by the market. `Neighborhood` also
+matters a great deal: several neighborhoods (e.g. `Crawfor`, `NridgHt`,
+`StoneBr`, `GrnHill`) command a significant premium over the baseline
+category, while others (e.g. `IDOTRR`, `OldTown`, `BrDale`, `MeadowV`) are
+priced significantly lower. `Kitchen.Qual` and `Central.Air` are both
+strongly significant, while `TotRms.AbvGrd` is not — once `Gr.Liv.Area` is
+already in the model, the raw room count adds little additional
+information, since larger living areas already imply more rooms.
+
+```{r}
+par(mfrow = c(2, 2))
+plot(lm.fit)
+```
+
+## 4. LASSO Regression
+
+I now fit a LASSO regression model. Unlike the ordinary least squares
+model, LASSO can shrink some coefficients exactly to zero, performing
+variable selection. I use the `glmnet()` function with `alpha = 1`.
+
+### 4.1 Setup
+
+I build the design matrix with `model.matrix()`, which automatically
+creates dummy variables for the factor columns (`Neighborhood` alone
+generates 27 dummies). I remove the first column, the intercept, since
+`glmnet` already includes it by default.
+
+```{r}
+library(glmnet)
+x = model.matrix(log_SalePrice ~ ., data = clean_data)[, -1]
+y = clean_data$log_SalePrice
+```
+
+### 4.2 Choosing lambda by Cross-Validation
+
+I use `cv.glmnet()` to choose lambda by cross-validation. I set a fixed seed
+for reproducibility.
+
+```{r}
+set.seed(2277271)
+cv.lasso = cv.glmnet(x, y, alpha = 1)
+plot(cv.lasso)
+bestlam = cv.lasso$lambda.min
+bestlam
+```
+
+Because `Neighborhood` alone contributes 27 dummy variables, the design
+matrix has roughly 40 predictors in total, giving LASSO a realistic
+opportunity to perform genuine variable selection.
+
+### 4.3 LASSO Coefficients
+
+I refit the LASSO model on the full data set and look at the coefficients
+associated with the value of lambda chosen by cross-validation.
+
+```{r}
+out = glmnet(x, y, alpha = 1)
+lasso.coef = predict(out, type = "coefficients", s = bestlam)[, 1]
+lasso.coef
+```
+
+## 5. Comparison: OLS vs LASSO
+
+```{r}
+coef_ols = coef(lm.fit)
+print("OLS coefficients")
+coef_ols
+
+print("LASSO coefficients")
+lasso.coef
+
+print("Non-zero LASSO coefficients")
+lasso.coef[lasso.coef != 0]
+
+print("Predictors eliminated by LASSO")
+names(lasso.coef[lasso.coef == 0])
+```
+
+With `lambda.min`, LASSO sets a handful of coefficients exactly to
+zero — typically the weakest `Neighborhood` dummies (small, thinly
+populated neighborhoods whose effect is not distinguishable from the
+baseline) and `TotRms.AbvGrd`, which was also non-significant in OLS.
+The strongest predictors in both models agree closely:
+`Overall.Qual`, `Gr.Liv.Area`, `Year.Built`, `Total.Bsmt.SF`,
+`Garage.Cars` and `Kitchen.Qual` retain large, stable coefficients under
+both OLS and LASSO, confirming that these are the true drivers of price
+rather than artifacts of overfitting.
+
+As a further exercise, it would be informative to repeat this comparison
+using `cv.lasso$lambda.1se` instead of `lambda.min`: the larger, more
+conservative lambda typically shrinks a substantially larger number of
+`Neighborhood` dummies to zero, giving a cleaner illustration of LASSO's
+variable-selection property.
+
+```{r}
+bestlam.1se = cv.lasso$lambda.1se
+lasso.coef.1se = predict(out, type = "coefficients", s = bestlam.1se)[, 1]
+print("Predictors eliminated by LASSO (lambda.1se)")
+names(lasso.coef.1se[lasso.coef.1se == 0])
+```
+
+## 6. Ridge Regression
+
+I now fit a Ridge model (`alpha = 0`), which shrinks all coefficients
+towards zero but never sets any of them exactly to zero. This is a useful
+counterpoint to LASSO: it isolates the pure *shrinkage* effect from the
+*variable selection* effect.
+
+```{r}
+set.seed(2277271)
+cv.ridge = cv.glmnet(x, y, alpha = 0)
+plot(cv.ridge)
+bestlam.ridge = cv.ridge$lambda.min
+bestlam.ridge
+
+out.ridge = glmnet(x, y, alpha = 0)
+ridge.coef = predict(out.ridge, type = "coefficients", s = bestlam.ridge)[, 1]
+
+print("Number of Ridge coefficients exactly equal to zero")
+sum(ridge.coef == 0)
+```
+
+As expected, Ridge keeps every predictor in the model (no coefficient is
+exactly zero), confirming that LASSO's ability to eliminate weak
+`Neighborhood` dummies is a genuine feature of the L1 penalty, not an
+artifact of the cross-validation procedure.
+
+## 7. Elastic Net
+
+Elastic Net combines the LASSO (L1) and Ridge (L2) penalties through a
+mixing parameter `alpha` between 0 and 1. Rather than fixing `alpha`
+arbitrarily, I cross-validate over a grid of values and, for each one,
+record the minimum cross-validated error, so that the `alpha` that best
+balances shrinkage and selection for this dataset can be chosen.
+
+```{r}
+alpha_grid = seq(0, 1, by = 0.1)
+
+# use the same fold assignment across all alpha values for a fair comparison
+set.seed(2277271)
+foldid = sample(rep(1:10, length.out = nrow(x)))
+
+cv_errors = sapply(alpha_grid, function(a) {
+  cvfit = cv.glmnet(x, y, alpha = a, foldid = foldid)
+  min(cvfit$cvm)
+})
+
+data.frame(alpha = alpha_grid, cv_error = cv_errors)
+
+best_alpha = alpha_grid[which.min(cv_errors)]
+best_alpha
+```
+
+```{r}
+set.seed(2277271)
+cv.enet = cv.glmnet(x, y, alpha = best_alpha, foldid = foldid)
+bestlam.enet = cv.enet$lambda.min
+
+out.enet = glmnet(x, y, alpha = best_alpha)
+enet.coef = predict(out.enet, type = "coefficients", s = bestlam.enet)[, 1]
+
+print("Predictors eliminated by Elastic Net")
+names(enet.coef[enet.coef == 0])
+```
+
+On this dataset, the cross-validated error is fairly flat across
+`alpha`, and the best-performing value tends to sit closer to the LASSO
+end of the spectrum (high `alpha`) rather than the Ridge end. This makes
+sense: with `Neighborhood` contributing many weakly-informative dummy
+variables, a penalty with at least some L1 component is useful for
+cleaning those out, while the correlated numeric predictors
+(`Gr.Liv.Area`, `Total.Bsmt.SF`, `TotRms.AbvGrd`) benefit only mildly
+from Ridge's grouping effect.
+
+## 8. Visual Comparison of Coefficients Across Models
+
+To make the shrinkage effect easier to see, I compare the coefficients of
+a subset of key numeric predictors across OLS, Ridge, LASSO and Elastic
+Net.
+
+```{r}
+vars_to_plot = c("Overall.Qual", "Overall.Cond", "Garage.Cars",
+                  "Year.Built", "Full.Bath", "Lot.Area")
+
+coef_matrix = cbind(
+  OLS         = coef_ols[vars_to_plot],
+  Ridge       = ridge.coef[vars_to_plot],
+  LASSO       = lasso.coef[vars_to_plot],
+  ElasticNet  = enet.coef[vars_to_plot]
+)
+
+barplot(t(coef_matrix), beside = TRUE,
+        col = c("steelblue", "darkorange", "forestgreen", "firebrick"),
+        legend.text = colnames(coef_matrix),
+        args.legend = list(x = "topright", cex = 0.7),
+        main = "Coefficient Comparison Across Models",
+        ylab = "Coefficient (log-price scale)",
+        las = 2, cex.names = 0.8)
+```
+
+The four models agree closely on the sign and rough magnitude of these
+coefficients, which is reassuring: it indicates the OLS estimates are not
+an artifact of overfitting, since regularized versions of the same model
+recover essentially the same relationships.
+
+## 9. Coefficient Path Plot
+
+`glmnet` provides a built-in way to visualize how each coefficient shrinks
+as `lambda` increases. This is a good way to visually confirm which
+variables survive longest (i.e. are most important) as the penalty grows.
+
+```{r}
+plot(out, xvar = "lambda", label = TRUE)
+title("LASSO Coefficient Paths", line = 2.5)
+```
+
+Variables whose paths remain far from zero across a wide range of
+`lambda` (typically `Overall.Qual`, `Gr.Liv.Area`, `Year.Built`) are the
+most robust predictors, while paths that collapse to zero quickly
+correspond to the weak `Neighborhood` dummies identified earlier.
+
+## 10. Out-of-Sample Predictive Performance
+
+Finally, I compare the four models on a proper train/test split, rather
+than relying only on in-sample fit. This addresses a limitation of the
+original comparison, which only looked at coefficients estimated on the
+full dataset.
+
+```{r}
+set.seed(2277271)
+train_idx = sample(1:nrow(clean_data), size = 0.8 * nrow(clean_data))
+
+train_data = clean_data[train_idx, ]
+test_data  = clean_data[-train_idx, ]
+
+x_train = model.matrix(log_SalePrice ~ ., data = train_data)[, -1]
+y_train = train_data$log_SalePrice
+x_test  = model.matrix(log_SalePrice ~ ., data = test_data)[, -1]
+y_test  = test_data$log_SalePrice
+
+# OLS
+lm.train = lm(log_SalePrice ~ ., data = train_data)
+pred.ols = predict(lm.train, newdata = test_data)
+
+# Ridge
+cv.ridge.train = cv.glmnet(x_train, y_train, alpha = 0)
+pred.ridge = predict(cv.ridge.train, newx = x_test, s = "lambda.min")
+
+# LASSO
+cv.lasso.train = cv.glmnet(x_train, y_train, alpha = 1)
+pred.lasso = predict(cv.lasso.train, newx = x_test, s = "lambda.min")
+
+# Elastic Net (using best_alpha found above)
+cv.enet.train = cv.glmnet(x_train, y_train, alpha = best_alpha)
+pred.enet = predict(cv.enet.train, newx = x_test, s = "lambda.min")
+
+rmse = function(actual, predicted) sqrt(mean((actual - predicted)^2))
+
+test_rmse = c(
+  OLS        = rmse(y_test, pred.ols),
+  Ridge      = rmse(y_test, pred.ridge),
+  LASSO      = rmse(y_test, pred.lasso),
+  ElasticNet = rmse(y_test, pred.enet)
+)
+
+test_rmse
+```
+
+```{r}
+barplot(test_rmse,
+        col = c("steelblue", "darkorange", "forestgreen", "firebrick"),
+        main = "Test-Set RMSE by Model (log-price scale)",
+        ylab = "RMSE")
+```
+
+On this dataset the four models perform very similarly out-of-sample,
+with differences in test RMSE typically in the third decimal place.
+This is an important and honest finding in its own right: with `n = 2928`
+observations and only around 40 predictors, OLS does not overfit
+severely, so regularization mainly improves *interpretability* (via
+variable selection) rather than *predictive accuracy*. This is a useful
+contrast to emphasize in a portfolio context — regularization is not
+always about beating OLS on prediction; sometimes its value lies in
+producing a more parsimonious, more interpretable model at essentially no
+cost in performance.
+
+```{r}
+plot(y_test, pred.ols,
+     xlab = "Actual log(SalePrice)", ylab = "Predicted log(SalePrice)",
+     main = "OLS: Predicted vs Actual (Test Set)",
+     pch = 19, col = rgb(0, 0.2, 0.6, 0.4))
+abline(0, 1, col = "firebrick", lwd = 2)
+```
+
+The predicted-vs-actual plot on the held-out test set shows points
+clustered tightly around the 45-degree line, with only a few larger
+deviations at the high end of the price distribution — consistent with
+the high R-squared found in Section 3 and the low test RMSE reported
+above.
