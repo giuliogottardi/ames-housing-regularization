@@ -96,6 +96,10 @@ a current market pricing model.
 
 R, `glmnet` (Ridge/LASSO/Elastic Net), base R plotting.
 
+## License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+
 ## Author
 
 Giulio Donato Gottardi — M.Sc. Financial Risk and Data Analysis, Sapienza
